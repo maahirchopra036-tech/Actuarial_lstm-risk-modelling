@@ -1,0 +1,1213 @@
+# Deep Learning Time-Series Forecasting with Stochastic Financial Foundations
+## LSTM Neural Networks | Stochastic Processes | Actuarial Risk Quantification
+
+---
+
+**Author:** Actuarial Quantitative Finance Project  
+**Assets Modelled:** Apple Inc. (AAPL) | JPMorgan Chase & Co. (JPM)  
+**Frameworks:** GBM Stochastic Simulation | LSTM Deep Learning | VaR/CVaR | Covariance Matrix Analysis | ADF Stationarity Testing
+
+---
+
+### Project Structure
+
+| Section | Content |
+|---|---|
+| 1 | Environment Setup & Data Acquisition |
+| 2 | Stationarity Testing (ADF) & Log Return Analysis |
+| 3 | Covariance Matrix & Portfolio Risk Decomposition |
+| 4 | Geometric Brownian Motion — Stochastic Simulation |
+| 5 | LSTM Architecture — Construction & Training |
+| 6 | Model Evaluation — RMSE, MAPE, Directional Accuracy |
+| 7 | Actuarial Risk Metrics — VaR, CVaR, Drawdown |
+| 8 | Multi-Horizon Forecasting (1Y / 2Y) |
+| 9 | Simulated Trading Strategy & Cumulative Returns |
+| 10 | Stress Testing & Scenario Analysis |
+| 11 | Summary Dashboard |
+
+---
+## Section 1 — Environment Setup & Data Acquisition
+# ── STEP 1: Run this cell ONCE to install all dependencies ─────────────────
+# If you see Pylance red underlines, that is a VS Code interpreter warning,
+# NOT a code error. Fix it by: Ctrl+Shift+P → "Python: Select Interpreter"
+# → choose the environment where you ran pip install below.
+#
+# Recommended: open VS Code terminal and run:
+#   python -m venv .venv
+#   .venv\Scripts\activate        # Windows
+#   pip install -r requirements.txt
+# Then select .venv as your interpreter in VS Code.
+
+import subprocess, sys
+packages = [
+    "numpy", "pandas", "matplotlib", "seaborn",
+    "yfinance", "scikit-learn", "scipy",
+    "statsmodels", "tensorflow"
+]
+subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet"] + packages)
+print("✓ All packages installed successfully")
+
+# ── Core imports ────────────────────────────────────────────────────────────
+import warnings
+warnings.filterwarnings('ignore')
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import seaborn as sns
+import yfinance as yf
+import math
+
+from scipy import stats
+from scipy.stats import norm, jarque_bera, kurtosis, skew
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
+from tensorflow.keras import Input
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+
+# ── Global plot style ───────────────────────────────────────────────────────
+plt.rcParams.update({
+    'figure.facecolor': '#0f0f0f',
+    'axes.facecolor':   '#1a1a2e',
+    'axes.edgecolor':   '#444466',
+    'axes.labelcolor':  '#ccccdd',
+    'text.color':       '#ccccdd',
+    'xtick.color':      '#aaaacc',
+    'ytick.color':      '#aaaacc',
+    'grid.color':       '#2a2a4a',
+    'grid.linestyle':   '--',
+    'grid.alpha':       0.5,
+    'legend.facecolor': '#16213e',
+    'legend.edgecolor': '#444466',
+    'font.family':      'monospace',
+})
+
+COLORS = {
+    'aapl':     '#00d4ff',
+    'jpm':      '#ff6b6b',
+    'forecast': '#ffd700',
+    'gbm':      '#7bed9f',
+    'risk':     '#ff4757',
+    'neutral':  '#a29bfe',
+    'strategy': '#fd79a8',
+}
+
+np.random.seed(42)
+tf.random.set_seed(42)
+
+print('✓ Environment ready')
+print(f'  TensorFlow  : {tf.__version__}')
+print(f'  NumPy       : {np.__version__}')
+print(f'  pandas      : {pd.__version__}')
+# ── Data acquisition ────────────────────────────────────────────────────────
+TICKERS  = ['AAPL', 'JPM']
+PERIOD   = '10y'
+SEQ_LEN  = 60    # lookback window (trading days)
+TRAIN_SPLIT = 0.80
+
+raw = {}
+for t in TICKERS:
+    df = yf.download(t, period=PERIOD, auto_adjust=True, progress=False)
+    df.columns = df.columns.get_level_values(0)  # flatten MultiIndex if present
+    raw[t] = df
+    print(f'✓ {t}  |  {len(df)} trading days  |  '
+          f'{df.index[0].date()} → {df.index[-1].date()}')
+
+apple = raw['AAPL'].copy()
+jpm   = raw['JPM'].copy()
+# ── Price overview ──────────────────────────────────────────────────────────
+fig, axes = plt.subplots(2, 1, figsize=(16, 8), sharex=False)
+
+for ax, (ticker, df, color) in zip(axes, [
+    ('AAPL', apple, COLORS['aapl']),
+    ('JPM',  jpm,   COLORS['jpm'])
+]):
+    close = df['Close'].squeeze()
+    ax.plot(close.index, close.values, color=color, lw=1.2, label=f'{ticker} Close')
+    ax.fill_between(close.index, close.values, alpha=0.08, color=color)
+    ax.set_title(f'{ticker} — 10-Year Closing Price', fontsize=13, pad=10)
+    ax.set_ylabel('Price (USD)')
+    ax.legend()
+    ax.grid(True)
+
+plt.suptitle('Equity Price History', fontsize=15, y=1.01)
+plt.tight_layout()
+plt.show()
+---
+## Section 2 — Stationarity Testing & Log Return Analysis
+
+### Mathematical Foundation
+
+**Log returns** are defined as:
+
+$$r_t = \ln\!\left(\frac{S_t}{S_{t-1}}\right)$$
+
+This is preferred over arithmetic returns because:
+- They are **additive over time**: $r_{t:t+n} = \sum_{i} r_{t+i}$
+- They are **approximately normally distributed** under GBM
+- They map naturally to the stochastic differential equation $dS_t / S_t$
+
+**Augmented Dickey-Fuller (ADF) Test:**
+
+$$\Delta r_t = \alpha + \beta t + \gamma r_{t-1} + \sum_{j=1}^{p} \delta_j \Delta r_{t-j} + \varepsilon_t$$
+
+$H_0$: Unit root present (non-stationary) — $\gamma = 0$  
+$H_1$: Stationary — $\gamma < 0$
+
+Rejection at $p < 0.05$ confirms suitability for time-series modelling.
+# ── Compute log returns ─────────────────────────────────────────────────────
+def compute_log_returns(df):
+    close = df['Close'].squeeze()
+    lr = np.log(close / close.shift(1)).dropna()
+    return lr
+
+lr_apple = compute_log_returns(apple)
+lr_jpm   = compute_log_returns(jpm)
+
+# ── ADF test ────────────────────────────────────────────────────────────────
+def adf_report(series, name):
+    result = adfuller(series, autolag='AIC')
+    adf_stat, p_val, n_lags, n_obs, crit = result[0], result[1], result[2], result[3], result[4]
+    print(f'\n── ADF Test: {name} ──────────────────────────')
+    print(f'  ADF Statistic : {adf_stat:.4f}')
+    print(f'  p-value       : {p_val:.6f}')
+    print(f'  Lags used     : {n_lags}')
+    for level, val in crit.items():
+        flag = '✓' if adf_stat < val else ' '
+        print(f'  {flag} Critical {level}: {val:.4f}')
+    conclusion = 'STATIONARY ✓' if p_val < 0.05 else 'NON-STATIONARY ✗'
+    print(f'  → Conclusion  : {conclusion}')
+    return p_val
+
+# Test prices (expected: non-stationary)
+print('=== PRICE LEVELS ===')
+adf_report(apple['Close'].squeeze(), 'AAPL Price')
+adf_report(jpm['Close'].squeeze(),   'JPM Price')
+
+# Test log returns (expected: stationary)
+print('\n=== LOG RETURNS ===')
+adf_report(lr_apple, 'AAPL Log Returns')
+adf_report(lr_jpm,   'JPM Log Returns')
+# ── Return distribution analysis ────────────────────────────────────────────
+def return_stats(series, name):
+    mu    = series.mean()
+    sigma = series.std()
+    sk    = skew(series)
+    kurt  = kurtosis(series)          # excess kurtosis
+    jb, jb_p = jarque_bera(series)
+    ann_vol   = sigma * np.sqrt(252)
+    ann_ret   = mu * 252
+    sharpe    = ann_ret / ann_vol if ann_vol != 0 else np.nan
+
+    print(f'\n── {name} ──────────────────────────────')
+    print(f'  Daily Mean Return   : {mu*100:.4f}%')
+    print(f'  Daily Std Dev       : {sigma*100:.4f}%')
+    print(f'  Annualised Return   : {ann_ret*100:.2f}%')
+    print(f'  Annualised Volatility: {ann_vol*100:.2f}%')
+    print(f'  Sharpe Ratio        : {sharpe:.3f}  (μ/σ, unscaled Rf=0)')
+    print(f'  Skewness            : {sk:.4f}')
+    print(f'  Excess Kurtosis     : {kurt:.4f}  ({"FAT TAILS" if kurt > 0 else "THIN TAILS"})')
+    print(f'  Jarque-Bera p-value : {jb_p:.6f}  ({"Non-Normal" if jb_p < 0.05 else "Normal"})')
+    return {'mu': mu, 'sigma': sigma, 'ann_vol': ann_vol, 'ann_ret': ann_ret,
+            'skew': sk, 'kurt': kurt, 'sharpe': sharpe}
+
+stats_apple = return_stats(lr_apple, 'AAPL Log Returns')
+stats_jpm   = return_stats(lr_jpm,   'JPM Log Returns')
+# ── Return distribution visualisation ───────────────────────────────────────
+fig, axes = plt.subplots(2, 3, figsize=(18, 9))
+
+for row, (lr, stats_d, ticker, color) in enumerate([
+    (lr_apple, stats_apple, 'AAPL', COLORS['aapl']),
+    (lr_jpm,   stats_jpm,   'JPM',  COLORS['jpm'])
+]):
+    # Log returns over time
+    ax = axes[row, 0]
+    ax.plot(lr.index, lr.values, color=color, lw=0.6, alpha=0.8)
+    ax.axhline(0, color='white', lw=0.8, linestyle='--')
+    ax.set_title(f'{ticker} Log Returns')
+    ax.set_ylabel('$r_t$')
+    ax.grid(True)
+
+    # Histogram + normal overlay
+    ax = axes[row, 1]
+    x_range = np.linspace(lr.min(), lr.max(), 300)
+    ax.hist(lr.values, bins=80, density=True, color=color, alpha=0.6, label='Empirical')
+    ax.plot(x_range, norm.pdf(x_range, stats_d['mu'], stats_d['sigma']),
+            color='white', lw=2, label='Normal fit')
+    ax.set_title(f'{ticker} Return Distribution')
+    ax.set_xlabel('Log Return')
+    ax.legend(fontsize=8)
+    ax.grid(True)
+
+    # Q-Q plot
+    ax = axes[row, 2]
+    (osm, osr), (slope, intercept, r) = stats.probplot(lr.values, dist='norm')
+    ax.scatter(osm, osr, color=color, s=2, alpha=0.5)
+    ax.plot(osm, slope * np.array(osm) + intercept, color='white', lw=1.5)
+    ax.set_title(f'{ticker} Q-Q Plot (vs Normal)')
+    ax.set_xlabel('Theoretical Quantiles')
+    ax.set_ylabel('Sample Quantiles')
+    ax.grid(True)
+    ax.text(0.05, 0.92,
+            f'Kurt={stats_d["kurt"]:.2f}  Skew={stats_d["skew"]:.2f}',
+            transform=ax.transAxes, fontsize=9, color='#ffd700')
+
+plt.suptitle('Log Return Analysis — Distribution, Normality & Serial Structure', fontsize=13)
+plt.tight_layout()
+plt.show()
+
+print('\nACTUARIAL NOTE: Fat tails (excess kurtosis > 0) and negative skewness')
+print('confirm that GBM\'s log-normal assumption understates tail risk —')
+print('a key motivation for VaR/CVaR analysis below.')
+---
+## Section 3 — Covariance Matrix & Portfolio Risk Decomposition
+
+### Mathematical Foundation
+
+For a two-asset portfolio, the **covariance matrix** of log returns is:
+
+$$\Sigma = \begin{pmatrix} \sigma^2_{\text{AAPL}} & \sigma_{\text{AAPL,JPM}} \\ \sigma_{\text{JPM,AAPL}} & \sigma^2_{\text{JPM}} \end{pmatrix}$$
+
+**Portfolio variance** for weight vector $w$:
+
+$$\sigma_p^2 = w^\top \Sigma \, w$$
+
+**Correlation matrix** (normalised):
+
+$$\rho_{X,Y} = \frac{\sigma_{X,Y}}{\sigma_X \sigma_Y}$$
+
+**Marginal Risk Contribution** of asset $i$:
+
+$$\text{MRC}_i = \frac{(\Sigma w)_i \cdot w_i}{\sigma_p}$$
+
+This decomposition is used in **Solvency II** and **economic capital** models to attribute portfolio risk to individual positions.
+# ── Covariance & correlation matrix ─────────────────────────────────────────
+returns_df = pd.concat([lr_apple, lr_jpm], axis=1).dropna()
+returns_df.columns = ['AAPL', 'JPM']
+
+# Daily covariance matrix
+COV_daily = returns_df.cov().values          # shape (2, 2)
+CORR      = returns_df.corr().values
+
+# Annualised covariance matrix (multiply by 252 trading days)
+COV_annual = COV_daily * 252
+
+print('─── Daily Covariance Matrix Σ ──────────────────────')
+print(pd.DataFrame(COV_daily,
+                   index=['AAPL', 'JPM'],
+                   columns=['AAPL', 'JPM']).to_string())
+
+print('\n─── Annualised Covariance Matrix Σ × 252 ───────────')
+print(pd.DataFrame(COV_annual,
+                   index=['AAPL', 'JPM'],
+                   columns=['AAPL', 'JPM']).to_string())
+
+print('\n─── Correlation Matrix ─────────────────────────────')
+print(pd.DataFrame(CORR,
+                   index=['AAPL', 'JPM'],
+                   columns=['AAPL', 'JPM']).to_string())
+
+rho = CORR[0, 1]
+print(f'\n  Pearson Correlation ρ(AAPL, JPM) = {rho:.4f}')
+# ── Portfolio risk decomposition across weight grids ────────────────────────
+weights_grid = np.linspace(0, 1, 500)     # w1 = AAPL weight, w2 = 1 - w1
+
+port_vols, port_rets = [], []
+for w1 in weights_grid:
+    w = np.array([w1, 1 - w1])
+    var_p = float(w @ COV_annual @ w)
+    vol_p = np.sqrt(var_p)
+    ret_p = float(w @ np.array([stats_apple['ann_ret'], stats_jpm['ann_ret']]))
+    port_vols.append(vol_p)
+    port_rets.append(ret_p)
+
+port_vols = np.array(port_vols)
+port_rets = np.array(port_rets)
+sharpes   = port_rets / port_vols
+
+# Minimum variance portfolio
+mv_idx  = np.argmin(port_vols)
+mv_w1   = weights_grid[mv_idx]
+mv_vol  = port_vols[mv_idx]
+mv_ret  = port_rets[mv_idx]
+
+# Maximum Sharpe portfolio
+ms_idx  = np.argmax(sharpes)
+ms_w1   = weights_grid[ms_idx]
+ms_vol  = port_vols[ms_idx]
+ms_ret  = port_rets[ms_idx]
+
+print(f'─── Efficient Frontier ─────────────────────────────')
+print(f'  Min Variance Portfolio  → AAPL={mv_w1:.2%}  JPM={1-mv_w1:.2%}  '
+      f'Vol={mv_vol:.2%}  Ret={mv_ret:.2%}')
+print(f'  Max Sharpe Portfolio    → AAPL={ms_w1:.2%}  JPM={1-ms_w1:.2%}  '
+      f'Vol={ms_vol:.2%}  Ret={ms_ret:.2%}')
+
+# Marginal Risk Contributions (equal weight)
+w_eq  = np.array([0.5, 0.5])
+var_eq = float(w_eq @ COV_annual @ w_eq)
+vol_eq = np.sqrt(var_eq)
+sigma_w = COV_annual @ w_eq
+mrc   = (sigma_w * w_eq) / vol_eq
+
+print(f'\n─── Marginal Risk Contributions (Equal Weight 50/50) ─')
+print(f'  Portfolio Annualised Vol: {vol_eq:.2%}')
+print(f'  AAPL MRC : {mrc[0]:.4f}  ({mrc[0]/vol_eq:.1%} of total risk)')
+print(f'  JPM  MRC : {mrc[1]:.4f}  ({mrc[1]/vol_eq:.1%} of total risk)')
+print(f'  Diversification Benefit : {(np.sqrt(COV_annual[0,0])*0.5 + np.sqrt(COV_annual[1,1])*0.5 - vol_eq):.2%}')
+# ── Visualise efficient frontier & covariance heatmap ───────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# Efficient frontier
+ax = axes[0]
+sc = ax.scatter(port_vols * 100, port_rets * 100,
+                c=sharpes, cmap='plasma', s=6, alpha=0.9)
+plt.colorbar(sc, ax=ax, label='Sharpe Ratio')
+ax.scatter(mv_vol * 100, mv_ret * 100, s=200, color='white',
+           marker='*', zorder=5, label=f'Min Variance (AAPL={mv_w1:.0%})')
+ax.scatter(ms_vol * 100, ms_ret * 100, s=200, color=COLORS['forecast'],
+           marker='*', zorder=5, label=f'Max Sharpe (AAPL={ms_w1:.0%})')
+
+# Individual assets
+ax.scatter(stats_apple['ann_vol'] * 100, stats_apple['ann_ret'] * 100,
+           s=120, color=COLORS['aapl'], marker='D', zorder=5, label='AAPL')
+ax.scatter(stats_jpm['ann_vol'] * 100, stats_jpm['ann_ret'] * 100,
+           s=120, color=COLORS['jpm'], marker='D', zorder=5, label='JPM')
+
+ax.set_xlabel('Annualised Volatility (%)')
+ax.set_ylabel('Annualised Return (%)')
+ax.set_title('Efficient Frontier — AAPL / JPM Portfolio')
+ax.legend(fontsize=8)
+ax.grid(True)
+
+# Covariance/correlation heatmap
+ax = axes[1]
+labels = ['AAPL', 'JPM']
+sns.heatmap(pd.DataFrame(CORR, index=labels, columns=labels),
+            annot=True, fmt='.4f', cmap='RdYlGn',
+            linewidths=2, ax=ax,
+            annot_kws={'size': 14, 'weight': 'bold'},
+            vmin=-1, vmax=1)
+ax.set_title('Pearson Correlation Matrix ρ')
+ax.set_facecolor('#1a1a2e')
+
+plt.suptitle('Covariance Analysis & Efficient Frontier', fontsize=13)
+plt.tight_layout()
+plt.show()
+---
+## Section 4 — Geometric Brownian Motion: Stochastic Simulation
+
+### Mathematical Foundation
+
+Under GBM, the asset price process satisfies:
+
+$$dS_t = \mu S_t \, dt + \sigma S_t \, dW_t$$
+
+By **Itô's Lemma**, the exact discrete-time solution is:
+
+$$S_{t+\Delta t} = S_t \exp\!\left[\left(\mu - \tfrac{1}{2}\sigma^2\right)\Delta t + \sigma \sqrt{\Delta t}\, Z_t\right], \quad Z_t \sim \mathcal{N}(0, 1)$$
+
+The $-\tfrac{1}{2}\sigma^2$ **Itô correction** is critical: it adjusts for the convexity of the exponential function and ensures $\mathbb{E}[S_t] = S_0 e^{\mu t}$.
+
+**Monte Carlo:** $N$ independent paths are simulated, providing a **probabilistic price fan** against which the LSTM's point forecast is benchmarked.
+# ── GBM Monte Carlo simulation ───────────────────────────────────────────────
+def gbm_simulate(S0, mu, sigma, T, dt=1/252, N=1000, seed=42):
+    """
+    Simulate N paths of Geometric Brownian Motion.
+
+    Parameters
+    ----------
+    S0    : float  — initial price
+    mu    : float  — annualised drift
+    sigma : float  — annualised volatility
+    T     : float  — time horizon in years
+    dt    : float  — time step (1/252 = 1 trading day)
+    N     : int    — number of Monte Carlo paths
+
+    Returns
+    -------
+    paths : ndarray shape (steps+1, N)
+    """
+    rng   = np.random.default_rng(seed)
+    steps = int(T / dt)
+    paths = np.zeros((steps + 1, N))
+    paths[0] = S0
+
+    # Itô-corrected GBM increment
+    drift   = (mu - 0.5 * sigma**2) * dt
+    diffuse = sigma * np.sqrt(dt)
+
+    Z = rng.standard_normal((steps, N))          # Brownian increments
+    for t in range(1, steps + 1):
+        paths[t] = paths[t - 1] * np.exp(drift + diffuse * Z[t - 1])
+
+    return paths
+
+
+N_PATHS = 500
+T_1Y    = 1.0
+T_2Y    = 2.0
+
+for ticker, df, stats_d, color in [
+    ('AAPL', apple, stats_apple, COLORS['aapl']),
+    ('JPM',  jpm,   stats_jpm,   COLORS['jpm'])
+]:
+    S0     = float(df['Close'].squeeze().iloc[-1])
+    mu     = stats_d['ann_ret']
+    sigma  = stats_d['ann_vol']
+
+    paths_1y = gbm_simulate(S0, mu, sigma, T=T_1Y, N=N_PATHS)
+    paths_2y = gbm_simulate(S0, mu, sigma, T=T_2Y, N=N_PATHS)
+
+    # Store for later comparison
+    if ticker == 'AAPL':
+        gbm_apple_1y, gbm_apple_2y = paths_1y, paths_2y
+        S0_apple = S0
+    else:
+        gbm_jpm_1y, gbm_jpm_2y = paths_1y, paths_2y
+        S0_jpm = S0
+
+    print(f'\n── GBM Parameters: {ticker} ──────────────────────────')
+    print(f'  S₀ (last price)     : ${S0:.2f}')
+    print(f'  μ  (ann. drift)     : {mu*100:.2f}%')
+    print(f'  σ  (ann. vol)       : {sigma*100:.2f}%')
+    print(f'  Itô drift adj. term : {(mu - 0.5*sigma**2)*100:.4f}%')
+    p5, p50, p95 = np.percentile(paths_1y[-1], [5, 50, 95])
+    print(f'  1Y Median forecast  : ${p50:.2f}')
+    print(f'  1Y 90% CI           : [${p5:.2f}, ${p95:.2f}]')
+# ── GBM fan chart visualisation ──────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+
+for ax, (ticker, paths_1y, paths_2y, S0, df, color) in zip(axes, [
+    ('AAPL', gbm_apple_1y, gbm_apple_2y, S0_apple, apple, COLORS['aapl']),
+    ('JPM',  gbm_jpm_1y,  gbm_jpm_2y,  S0_jpm,  jpm,   COLORS['jpm'])
+]):
+    steps = paths_2y.shape[0] - 1
+    t     = np.arange(steps + 1) / 252
+
+    # Fan chart: percentile bands
+    for lo, hi, alpha in [(5, 95, 0.10), (20, 80, 0.18), (35, 65, 0.28)]:
+        ax.fill_between(t,
+                        np.percentile(paths_2y, lo, axis=1),
+                        np.percentile(paths_2y, hi, axis=1),
+                        color=color, alpha=alpha)
+
+    # Sample paths
+    ax.plot(t, paths_2y[:, :8], color=color, lw=0.5, alpha=0.3)
+
+    # Median & expected value
+    ax.plot(t, np.median(paths_2y, axis=1),
+            color='white', lw=2, label='Median path', zorder=5)
+    ax.plot(t, np.percentile(paths_2y, 5,  axis=1),
+            color=COLORS['risk'], lw=1.5, linestyle='--', label='5th percentile')
+    ax.plot(t, np.percentile(paths_2y, 95, axis=1),
+            color=COLORS['gbm'],  lw=1.5, linestyle='--', label='95th percentile')
+
+    ax.axhline(S0, color='#aaa', lw=1, linestyle=':')
+    ax.axvline(1.0, color=COLORS['forecast'], lw=1.2, linestyle='--', alpha=0.7, label='1-Year mark')
+    ax.set_xlabel('Time (Years)')
+    ax.set_ylabel('Simulated Price (USD)')
+    ax.set_title(f'{ticker} — GBM Monte Carlo Fan Chart\n({N_PATHS} paths, 2-Year Horizon)')
+    ax.legend(fontsize=8)
+    ax.grid(True)
+
+plt.suptitle('Geometric Brownian Motion — Stochastic Price Simulation', fontsize=13)
+plt.tight_layout()
+plt.show()
+---
+## Section 5 — LSTM Architecture: Construction & Training
+
+### Mathematical Foundation
+
+The LSTM approximates:
+
+$$\hat{S}_{t+1} = f(S_t, S_{t-1}, \ldots, S_{t-59}) + \varepsilon_{t+1}$$
+
+Gate equations for LSTM unit at time $t$:
+
+| Gate | Equation |
+|---|---|
+| Input | $i_t = \sigma(W_i x_t + U_i h_{t-1} + b_i)$ |
+| Forget | $f_t = \sigma(W_f x_t + U_f h_{t-1} + b_f)$ |
+| Cell | $c_t = f_t \odot c_{t-1} + i_t \odot \tanh(W_c x_t + U_c h_{t-1} + b_c)$ |
+| Output | $h_t = o_t \odot \tanh(c_t)$ |
+
+**Adam optimiser** adapts learning rates per parameter using first and second moment estimates, making it robust to the non-stationary loss landscapes common in financial data.
+# ── Data preparation ─────────────────────────────────────────────────────────
+def prepare_data(df, seq_len=60, train_split=0.80):
+    """
+    Scale, sequence, and split price data for LSTM training.
+
+    Returns
+    -------
+    X_train, y_train, X_test, y_test : arrays
+    scaler                           : fitted MinMaxScaler
+    split_idx                        : int — index where test begins
+    scaled                           : full scaled array
+    """
+    close  = df['Close'].squeeze().values.reshape(-1, 1)
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled = scaler.fit_transform(close)
+
+    X, y = [], []
+    for i in range(seq_len, len(scaled)):
+        X.append(scaled[i - seq_len:i, 0])
+        y.append(scaled[i, 0])
+
+    X, y = np.array(X), np.array(y)
+
+    split  = int(len(X) * train_split)
+    X_train, X_test = X[:split], X[split:]
+    y_train, y_test = y[:split], y[split:]
+
+    # Reshape → [samples, timesteps, features]
+    X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+    X_test  = X_test.reshape( X_test.shape[0],  X_test.shape[1],  1)
+
+    return X_train, y_train, X_test, y_test, scaler, split + seq_len, scaled
+
+
+(X_tr_a, y_tr_a, X_te_a, y_te_a,
+ scaler_apple, split_a, scaled_apple) = prepare_data(apple, SEQ_LEN, TRAIN_SPLIT)
+
+(X_tr_j, y_tr_j, X_te_j, y_te_j,
+ scaler_jpm, split_j, scaled_jpm) = prepare_data(jpm, SEQ_LEN, TRAIN_SPLIT)
+
+print(f'AAPL → Train: {X_tr_a.shape}  Test: {X_te_a.shape}')
+print(f'JPM  → Train: {X_tr_j.shape}  Test: {X_te_j.shape}')
+# ── LSTM model construction ──────────────────────────────────────────────────
+def build_lstm(seq_len=60, units=64, dropout=0.2):
+    """
+    Two-layer stacked LSTM with BatchNormalization and Dropout regularisation.
+
+    Architecture
+    ------------
+    Input → LSTM(units, return_sequences=True)
+          → BatchNorm → Dropout
+          → LSTM(units//2)
+          → BatchNorm → Dropout
+          → Dense(25, relu)
+          → Dense(1)
+    """
+    model = Sequential([
+        Input(shape=(seq_len, 1)),
+
+        LSTM(units, return_sequences=True),
+        BatchNormalization(),
+        Dropout(dropout),
+
+        LSTM(units // 2, return_sequences=False),
+        BatchNormalization(),
+        Dropout(dropout),
+
+        Dense(25, activation='relu'),
+        Dense(1)
+    ])
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        loss='huber',           # robust to outliers vs MSE
+        metrics=['mae']
+    )
+    return model
+
+
+model_apple = build_lstm(SEQ_LEN, units=64)
+model_jpm   = build_lstm(SEQ_LEN, units=64)
+
+model_apple.summary()
+# ── Training with callbacks ───────────────────────────────────────────────────
+callbacks = [
+    EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True),
+    ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=4, min_lr=1e-6)
+]
+
+print('Training AAPL model...')
+hist_apple = model_apple.fit(
+    X_tr_a, y_tr_a,
+    validation_split=0.10,
+    epochs=60,
+    batch_size=32,
+    callbacks=callbacks,
+    verbose=0
+)
+print(f'  → Stopped at epoch {len(hist_apple.history["loss"])}  '
+      f'| Best val_loss: {min(hist_apple.history["val_loss"]):.6f}')
+
+print('\nTraining JPM model...')
+hist_jpm = model_jpm.fit(
+    X_tr_j, y_tr_j,
+    validation_split=0.10,
+    epochs=60,
+    batch_size=32,
+    callbacks=callbacks,
+    verbose=0
+)
+print(f'  → Stopped at epoch {len(hist_jpm.history["loss"])}  '
+      f'| Best val_loss: {min(hist_jpm.history["val_loss"]):.6f}')
+# ── Training curve ───────────────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+
+for ax, (hist, ticker, color) in zip(axes, [
+    (hist_apple, 'AAPL', COLORS['aapl']),
+    (hist_jpm,   'JPM',  COLORS['jpm'])
+]):
+    epochs = range(1, len(hist.history['loss']) + 1)
+    ax.plot(epochs, hist.history['loss'],     color=color,   lw=2, label='Train loss')
+    ax.plot(epochs, hist.history['val_loss'], color='white', lw=2, linestyle='--', label='Val loss')
+    ax.set_title(f'{ticker} — Training & Validation Loss (Huber)')
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Loss')
+    ax.legend()
+    ax.grid(True)
+
+plt.suptitle('LSTM Learning Curves', fontsize=13)
+plt.tight_layout()
+plt.show()
+---
+## Section 6 — Model Evaluation: RMSE, MAPE & Directional Accuracy
+# ── Generate predictions ──────────────────────────────────────────────────────
+def predict_inverse(model, X, scaler):
+    pred_scaled = model.predict(X, verbose=0)
+    return scaler.inverse_transform(pred_scaled).flatten()
+
+# Test set predictions
+pred_te_apple = predict_inverse(model_apple, X_te_a, scaler_apple)
+pred_te_jpm   = predict_inverse(model_jpm,   X_te_j, scaler_jpm)
+
+# Actual test prices
+actual_te_apple = apple['Close'].squeeze().values[split_a:]
+actual_te_jpm   = jpm['Close'].squeeze().values[split_j:]
+
+# ── Metrics ──────────────────────────────────────────────────────────────────
+def eval_metrics(actual, predicted, name):
+    n     = len(actual)
+    rmse  = math.sqrt(mean_squared_error(actual, predicted))
+    mae   = np.mean(np.abs(actual - predicted))
+    mape  = np.mean(np.abs((actual - predicted) / actual)) * 100
+
+    # Directional accuracy — did the model get the direction right?
+    dir_actual = np.sign(np.diff(actual))
+    dir_pred   = np.sign(np.diff(predicted))
+    dir_acc    = np.mean(dir_actual == dir_pred) * 100
+
+    # Theil's U — relative to naive random walk
+    naive_rmse = math.sqrt(mean_squared_error(actual[1:], actual[:-1]))
+    theil_u    = rmse / naive_rmse
+
+    print(f'\n── {name} — Test Set Metrics ──────────────────────────')
+    print(f'  Observations         : {n}')
+    print(f'  RMSE                 : ${rmse:.4f}')
+    print(f'  MAE                  : ${mae:.4f}')
+    print(f'  MAPE                 : {mape:.4f}%')
+    print(f'  Directional Accuracy : {dir_acc:.2f}%  (random = 50%)')
+    print(f'  Theil\'s U            : {theil_u:.4f}  (< 1 = beats naive)')
+    return {'rmse': rmse, 'mae': mae, 'mape': mape, 'dir_acc': dir_acc, 'theil_u': theil_u}
+
+metrics_apple = eval_metrics(actual_te_apple, pred_te_apple, 'AAPL')
+metrics_jpm   = eval_metrics(actual_te_jpm,   pred_te_jpm,   'JPM')
+# ── Actual vs predicted on test set ─────────────────────────────────────────
+fig, axes = plt.subplots(2, 1, figsize=(16, 10))
+
+for ax, (ticker, actual, pred, df, split, color, metrics) in zip(axes, [
+    ('AAPL', actual_te_apple, pred_te_apple, apple, split_a, COLORS['aapl'], metrics_apple),
+    ('JPM',  actual_te_jpm,   pred_te_jpm,   jpm,   split_j, COLORS['jpm'],  metrics_jpm)
+]):
+    test_dates = df.index[split:]
+    n = min(len(test_dates), len(actual), len(pred))
+
+    ax.plot(test_dates[:n], actual[:n], color=color,   lw=1.5, label='Actual')
+    ax.plot(test_dates[:n], pred[:n],   color='white', lw=1.2,
+            linestyle='--', alpha=0.9, label='LSTM Predicted')
+
+    # Residual shading
+    residuals = actual[:n] - pred[:n]
+    ax.fill_between(test_dates[:n], actual[:n], pred[:n],
+                    where=(residuals > 0), alpha=0.12, color=COLORS['gbm'], label='Over-predict')
+    ax.fill_between(test_dates[:n], actual[:n], pred[:n],
+                    where=(residuals < 0), alpha=0.12, color=COLORS['risk'], label='Under-predict')
+
+    ax.set_title(
+        f'{ticker} — Out-of-Sample Prediction | '
+        f'RMSE=${metrics["rmse"]:.2f}  MAPE={metrics["mape"]:.2f}%  '
+        f'Dir.Acc={metrics["dir_acc"]:.1f}%'
+    )
+    ax.set_ylabel('Price (USD)')
+    ax.legend(fontsize=8)
+    ax.grid(True)
+
+plt.suptitle('LSTM Out-of-Sample Predictions (Hold-Out Test Set)', fontsize=13)
+plt.tight_layout()
+plt.show()
+---
+## Section 7 — Actuarial Risk Metrics: VaR, CVaR, Drawdown
+
+### Mathematical Foundation
+
+**Value at Risk** at confidence level $\alpha$:
+
+$$\text{VaR}_\alpha = \hat{\mu} + z_\alpha \hat{\sigma}$$
+
+**Conditional VaR / Expected Shortfall** — a *coherent* risk measure satisfying subadditivity:
+
+$$\text{CVaR}_\alpha = \mathbb{E}[L \mid L > \text{VaR}_\alpha] = -\hat{\mu} + \hat{\sigma} \cdot \frac{\phi(z_\alpha)}{1 - \alpha}$$
+
+**Maximum Drawdown:**
+
+$$\text{MDD} = \max_{t \in [0,T]} \left( \frac{\max_{s \le t} S_s - S_t}{\max_{s \le t} S_s} \right)$$
+
+These are the standard metrics in **Solvency II**, **economic capital**, and **ORSA** frameworks.
+# ── VaR & CVaR — parametric and historical ──────────────────────────────────
+def compute_risk_metrics(log_returns, name, confidence=0.95):
+    alpha  = 1 - confidence
+    mu     = log_returns.mean()
+    sigma  = log_returns.std()
+    z      = norm.ppf(alpha)           # e.g. -1.645 for 95%
+
+    # Parametric VaR & CVaR (assumes normality)
+    var_param  = -(mu + z * sigma)
+    cvar_param = -(mu - sigma * norm.pdf(z) / alpha)
+
+    # Historical VaR & CVaR (non-parametric, captures fat tails)
+    var_hist   = -np.percentile(log_returns, alpha * 100)
+    cvar_hist  = -log_returns[log_returns <= -var_hist].mean()
+
+    # Maximum Drawdown
+    cumulative = np.exp(np.cumsum(log_returns))
+    peak       = np.maximum.accumulate(cumulative)
+    drawdown   = (peak - cumulative) / peak
+    mdd        = drawdown.max()
+
+    # Calmar ratio (ann. return / MDD)
+    ann_ret  = mu * 252
+    calmar   = ann_ret / mdd if mdd != 0 else np.nan
+
+    print(f'\n── Risk Metrics: {name} (Confidence={confidence:.0%}) ─────────')
+    print(f'  Parametric  VaR  (1-day): {var_param*100:.4f}%')
+    print(f'  Parametric  CVaR (1-day): {cvar_param*100:.4f}%')
+    print(f'  Historical  VaR  (1-day): {var_hist*100:.4f}%')
+    print(f'  Historical  CVaR (1-day): {cvar_hist*100:.4f}%')
+    print(f'  Max Drawdown              : {mdd*100:.2f}%')
+    print(f'  Calmar Ratio              : {calmar:.3f}')
+    print(f'  CVaR > VaR (expected)     : {cvar_hist > var_hist}')
+
+    return {
+        'var_param': var_param, 'cvar_param': cvar_param,
+        'var_hist':  var_hist,  'cvar_hist':  cvar_hist,
+        'mdd': mdd, 'calmar': calmar,
+        'drawdown': drawdown, 'cumulative': cumulative
+    }
+
+risk_apple = compute_risk_metrics(lr_apple.values, 'AAPL')
+risk_jpm   = compute_risk_metrics(lr_jpm.values,   'JPM')
+# ── VaR visualisation — return distribution with risk cutoffs ────────────────
+fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+
+for row, (lr, risk, ticker, color) in enumerate([
+    (lr_apple, risk_apple, 'AAPL', COLORS['aapl']),
+    (lr_jpm,   risk_jpm,   'JPM',  COLORS['jpm'])
+]):
+    # Return distribution + VaR
+    ax = axes[row, 0]
+    ax.hist(lr.values * 100, bins=80, density=True,
+            color=color, alpha=0.5, label='Log returns')
+
+    # Normal overlay
+    x = np.linspace(lr.min() * 100, lr.max() * 100, 300)
+    ax.plot(x, norm.pdf(x, lr.mean() * 100, lr.std() * 100) / 100,
+            color='white', lw=1.5, label='Normal fit')
+
+    # VaR & CVaR lines
+    ax.axvline(-risk['var_hist']  * 100, color=COLORS['forecast'], lw=2, linestyle='--',
+               label=f'Hist VaR 95%: {risk["var_hist"]*100:.2f}%')
+    ax.axvline(-risk['cvar_hist'] * 100, color=COLORS['risk'], lw=2, linestyle='--',
+               label=f'Hist CVaR 95%: {risk["cvar_hist"]*100:.2f}%')
+
+    # Tail fill
+    tail_x = lr.values[lr.values <= -risk['var_hist']]
+    ax.hist(tail_x * 100, bins=30, density=True,
+            color=COLORS['risk'], alpha=0.6)
+
+    ax.set_title(f'{ticker} — Return Distribution & VaR/CVaR')
+    ax.set_xlabel('Daily Log Return (%)')
+    ax.set_ylabel('Density')
+    ax.legend(fontsize=7)
+    ax.grid(True)
+
+    # Drawdown chart
+    ax = axes[row, 1]
+    dates = lr.index
+    n     = min(len(dates), len(risk['drawdown']))
+    ax.fill_between(dates[:n], -risk['drawdown'][:n] * 100,
+                    color=COLORS['risk'], alpha=0.6)
+    ax.plot(dates[:n], -risk['drawdown'][:n] * 100,
+            color=COLORS['risk'], lw=0.8)
+    ax.axhline(-risk['mdd'] * 100, color='white', lw=1.5, linestyle='--',
+               label=f'Max Drawdown: {risk["mdd"]*100:.2f}%')
+    ax.set_title(f'{ticker} — Drawdown Over Time')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Drawdown (%)')
+    ax.legend(fontsize=8)
+    ax.grid(True)
+
+plt.suptitle('Actuarial Risk Metrics — VaR, CVaR, Maximum Drawdown', fontsize=13)
+plt.tight_layout()
+plt.show()
+---
+## Section 8 — Multi-Horizon Forecasting: 1Y and 2Y
+# ── Recursive multi-step forecast ────────────────────────────────────────────
+def forecast_future(model, last_seq_scaled, scaler, steps):
+    """
+    Recursively generate `steps` forward predictions.
+    Each prediction is fed back into the sequence window.
+
+    Note: Uncertainty accumulates with horizon — analogous to
+    actuarial reserve run-off uncertainty increasing with time.
+    """
+    preds   = []
+    seq     = last_seq_scaled.reshape(1, -1, 1).copy()
+
+    for _ in range(steps):
+        p   = model.predict(seq, verbose=0)[0, 0]
+        preds.append(p)
+        seq = np.append(seq[:, 1:, :], [[[p]]], axis=1)
+
+    return scaler.inverse_transform(
+        np.array(preds).reshape(-1, 1)
+    ).flatten()
+
+
+last_a = scaled_apple[-SEQ_LEN:]
+last_j = scaled_jpm[-SEQ_LEN:]
+
+fc_1y_apple = forecast_future(model_apple, last_a, scaler_apple, 252)
+fc_2y_apple = forecast_future(model_apple, last_a, scaler_apple, 504)
+fc_1y_jpm   = forecast_future(model_jpm,   last_j, scaler_jpm,   252)
+fc_2y_jpm   = forecast_future(model_jpm,   last_j, scaler_jpm,   504)
+
+# Future date ranges
+fd_1y_a = pd.bdate_range(apple.index[-1] + pd.Timedelta(days=1), periods=252)
+fd_2y_a = pd.bdate_range(apple.index[-1] + pd.Timedelta(days=1), periods=504)
+fd_1y_j = pd.bdate_range(jpm.index[-1]   + pd.Timedelta(days=1), periods=252)
+fd_2y_j = pd.bdate_range(jpm.index[-1]   + pd.Timedelta(days=1), periods=504)
+
+for ticker, fc1, fc2 in [('AAPL', fc_1y_apple, fc_2y_apple), ('JPM', fc_1y_jpm, fc_2y_jpm)]:
+    print(f'\n── {ticker} Forecast ─────────────────────────────────')
+    print(f'  1-Year forecast end  : ${fc1[-1]:.2f}  (Δ {(fc1[-1]/fc1[0]-1)*100:+.2f}%)')
+    print(f'  2-Year forecast end  : ${fc2[-1]:.2f}  (Δ {(fc2[-1]/fc2[0]-1)*100:+.2f}%)')
+# ── LSTM vs GBM forecast comparison ─────────────────────────────────────────
+fig, axes = plt.subplots(2, 1, figsize=(18, 12))
+
+HIST_WINDOW = 504  # show last 2 years of actual history
+
+for ax, (ticker, df, fc1, fc2, fd1, fd2,
+         gbm_1y, gbm_2y, color) in zip(axes, [
+    ('AAPL', apple, fc_1y_apple, fc_2y_apple, fd_1y_a, fd_2y_a,
+     gbm_apple_1y, gbm_apple_2y, COLORS['aapl']),
+    ('JPM',  jpm,  fc_1y_jpm,   fc_2y_jpm,   fd_1y_j, fd_2y_j,
+     gbm_jpm_1y,  gbm_jpm_2y,  COLORS['jpm'])
+]):
+    close  = df['Close'].squeeze()
+    hist   = close.iloc[-HIST_WINDOW:]
+
+    # Historical price
+    ax.plot(hist.index, hist.values, color=color, lw=1.8, label='Historical', zorder=5)
+
+    # LSTM forecasts
+    ax.plot(fd1, fc1, color='white', lw=2, linestyle='--', label='LSTM 1Y Forecast', zorder=5)
+    ax.plot(fd2, fc2, color=COLORS['forecast'], lw=2, linestyle='--', label='LSTM 2Y Forecast', zorder=5)
+
+    # GBM fan
+    steps_2y = gbm_2y.shape[0] - 1
+    gbm_dates = pd.bdate_range(df.index[-1] + pd.Timedelta(days=1), periods=steps_2y)
+    n_gbm = min(len(gbm_dates), steps_2y)
+
+    for lo, hi, a in [(5, 95, 0.07), (20, 80, 0.12), (35, 65, 0.18)]:
+        ax.fill_between(gbm_dates[:n_gbm],
+                        np.percentile(gbm_2y[1:n_gbm+1], lo, axis=1),
+                        np.percentile(gbm_2y[1:n_gbm+1], hi, axis=1),
+                        color=COLORS['gbm'], alpha=a)
+
+    ax.plot(gbm_dates[:n_gbm],
+            np.median(gbm_2y[1:n_gbm+1], axis=1),
+            color=COLORS['gbm'], lw=1.5, linestyle='-.',
+            label='GBM Median', alpha=0.9)
+
+    # Dividing line
+    ax.axvline(df.index[-1], color='#aaa', lw=1.5, linestyle=':')
+    ax.set_title(f'{ticker} — LSTM vs GBM Forecast (1Y & 2Y Horizon)')
+    ax.set_ylabel('Price (USD)')
+    ax.legend(fontsize=9)
+    ax.grid(True)
+
+plt.suptitle('Multi-Horizon Price Forecast: Neural Network vs Stochastic Simulation', fontsize=13)
+plt.tight_layout()
+plt.show()
+---
+## Section 9 — Simulated Trading Strategy & Cumulative Returns
+# ── Strategy: go long if LSTM predicts price increase, else hold cash ────────
+def strategy_returns(actual, predicted, transaction_cost=0.001):
+    """
+    Long-only momentum strategy based on LSTM direction signal.
+
+    Parameters
+    ----------
+    actual           : array — actual prices
+    predicted        : array — LSTM predicted prices
+    transaction_cost : float — round-trip cost per trade
+
+    Returns
+    -------
+    cum_actual   : buy-and-hold cumulative return
+    cum_strategy : strategy cumulative return
+    n_trades     : number of trades executed
+    sharpe       : annualised Sharpe ratio of strategy
+    """
+    actual    = actual.flatten()
+    predicted = predicted.flatten()
+    n         = min(len(actual), len(predicted)) - 1
+
+    daily_ret  = np.diff(actual[:n+1]) / actual[:n]
+    signal     = (predicted[1:n+1] > predicted[:n]).astype(float)  # 1=long, 0=cash
+    trade_flag = np.abs(np.diff(np.append(0, signal)))               # 1 if position changes
+
+    strat_ret  = signal * daily_ret - trade_flag * transaction_cost
+
+    cum_actual   = np.cumprod(1 + daily_ret)
+    cum_strategy = np.cumprod(1 + strat_ret)
+    n_trades     = int(trade_flag.sum())
+
+    ann_sr   = strat_ret.mean() * 252
+    ann_sv   = strat_ret.std()  * np.sqrt(252)
+    sharpe   = ann_sr / ann_sv if ann_sv != 0 else np.nan
+
+    return cum_actual, cum_strategy, n_trades, sharpe, strat_ret
+
+
+cum_act_a, cum_str_a, ntrades_a, sharpe_a, sret_a = strategy_returns(
+    actual_te_apple, pred_te_apple)
+cum_act_j, cum_str_j, ntrades_j, sharpe_j, sret_j = strategy_returns(
+    actual_te_jpm,   pred_te_jpm)
+
+print(f'── AAPL Strategy ────────────────────────────────────')
+print(f'  Buy-and-Hold Return   : {(cum_act_a[-1]-1)*100:+.2f}%')
+print(f'  Strategy Return       : {(cum_str_a[-1]-1)*100:+.2f}%')
+print(f'  Trades Executed       : {ntrades_a}')
+print(f'  Strategy Sharpe Ratio : {sharpe_a:.4f}')
+
+print(f'\n── JPM Strategy ─────────────────────────────────────')
+print(f'  Buy-and-Hold Return   : {(cum_act_j[-1]-1)*100:+.2f}%')
+print(f'  Strategy Return       : {(cum_str_j[-1]-1)*100:+.2f}%')
+print(f'  Trades Executed       : {ntrades_j}')
+print(f'  Strategy Sharpe Ratio : {sharpe_j:.4f}')
+# ── Plot cumulative returns ───────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+for ax, (ticker, cum_act, cum_str, color) in zip(axes, [
+    ('AAPL', cum_act_a, cum_str_a, COLORS['aapl']),
+    ('JPM',  cum_act_j, cum_str_j, COLORS['jpm'])
+]):
+    ax.plot(cum_act, color=color,             lw=2, label='Buy-and-Hold')
+    ax.plot(cum_str, color=COLORS['strategy'], lw=2, linestyle='--', label='LSTM Strategy')
+    ax.axhline(1, color='#aaa', lw=1, linestyle=':')
+    ax.set_title(f'{ticker} — Cumulative Returns (Test Period)')
+    ax.set_xlabel('Trading Days')
+    ax.set_ylabel('Growth of £1')
+    ax.legend()
+    ax.grid(True)
+
+plt.suptitle('Simulated Strategy vs Buy-and-Hold (with Transaction Costs)', fontsize=13)
+plt.tight_layout()
+plt.show()
+---
+## Section 10 — Stress Testing & Scenario Analysis
+
+### Actuarial Rationale
+
+Stress testing is a core requirement of **Solvency II**, **IFRS 17**, and **ORSA** frameworks. Rather than relying solely on historical volatility, actuaries apply **hypothetical shocks** to assess portfolio resilience under extreme scenarios.
+
+Three scenarios are applied to the GBM simulation:
+
+| Scenario | Drift Shock | Volatility Shock | Analogue |
+|---|---|---|---|
+| Base Case | Historical $\mu$ | Historical $\sigma$ | Normal conditions |
+| Market Crash | $\mu - 3\sigma$ | $2.5\sigma$ | 2008 / COVID-19 style |
+| Bull Run | $\mu + 2\sigma$ | $0.8\sigma$ | 2019 rally |
+| High Volatility | $\mu$ | $2\sigma$ | Uncertainty shock |
+# ── Scenario definitions ─────────────────────────────────────────────────────
+SCENARIOS = {
+    'Base Case':      {'mu_mult': 1.0,  'sig_mult': 1.0},
+    'Market Crash':   {'mu_mult': -3.0, 'sig_mult': 2.5},
+    'Bull Run':       {'mu_mult': 2.0,  'sig_mult': 0.8},
+    'High Volatility':{'mu_mult': 1.0,  'sig_mult': 2.0},
+}
+
+SCENARIO_COLORS = {
+    'Base Case':       COLORS['aapl'],
+    'Market Crash':    COLORS['risk'],
+    'Bull Run':        COLORS['gbm'],
+    'High Volatility': COLORS['forecast'],
+}
+
+fig, axes = plt.subplots(1, 2, figsize=(18, 7))
+
+for ax, (ticker, df, stats_d, color_base) in zip(axes, [
+    ('AAPL', apple, stats_apple, COLORS['aapl']),
+    ('JPM',  jpm,   stats_jpm,   COLORS['jpm'])
+]):
+    S0    = float(df['Close'].squeeze().iloc[-1])
+    mu0   = stats_d['ann_ret']
+    sig0  = stats_d['ann_vol']
+
+    scenario_results = {}
+
+    for sc_name, sc_params in SCENARIOS.items():
+        mu_sc  = mu0 * sc_params['mu_mult']
+        sig_sc = sig0 * sc_params['sig_mult']
+        paths  = gbm_simulate(S0, mu_sc, sig_sc, T=1.0, N=200)
+        p5, p50, p95 = np.percentile(paths[-1], [5, 50, 95])
+        scenario_results[sc_name] = {'p5': p5, 'p50': p50, 'p95': p95}
+
+        t = np.arange(paths.shape[0]) / 252
+        sc_color = SCENARIO_COLORS[sc_name]
+
+        ax.fill_between(t,
+                        np.percentile(paths, 20, axis=1),
+                        np.percentile(paths, 80, axis=1),
+                        color=sc_color, alpha=0.07)
+        ax.plot(t, np.median(paths, axis=1),
+                color=sc_color, lw=2, label=sc_name)
+
+    ax.axhline(S0, color='#888', lw=1, linestyle=':', label=f'S₀ = ${S0:.2f}')
+    ax.set_title(f'{ticker} — 1-Year Stress Test Scenarios')
+    ax.set_xlabel('Time (Years)')
+    ax.set_ylabel('Price (USD)')
+    ax.legend(fontsize=8)
+    ax.grid(True)
+
+    print(f'\n── {ticker} Scenario Summary (1-Year, Median Price) ─────────')
+    for sc, res in scenario_results.items():
+        print(f'  {sc:<20} → P5=${res["p5"]:>8.2f}  '
+              f'Median=${res["p50"]:>8.2f}  P95=${res["p95"]:>8.2f}')
+
+plt.suptitle('Stress Testing — GBM Scenario Analysis (Solvency II Framework)', fontsize=13)
+plt.tight_layout()
+plt.show()
+---
+## Section 11 — Summary Dashboard
+# ── Final metrics summary ─────────────────────────────────────────────────────
+print('=' * 62)
+print('  ACTUARIAL QUANTITATIVE FORECASTING — SUMMARY DASHBOARD')
+print('=' * 62)
+
+rows = [
+    ('Metric', 'AAPL', 'JPM'),
+    ('─' * 28, '─' * 12, '─' * 12),
+    ('Annualised Return',
+     f"{stats_apple['ann_ret']*100:.2f}%",
+     f"{stats_jpm['ann_ret']*100:.2f}%"),
+    ('Annualised Volatility σ',
+     f"{stats_apple['ann_vol']*100:.2f}%",
+     f"{stats_jpm['ann_vol']*100:.2f}%"),
+    ('Sharpe Ratio (Rf=0)',
+     f"{stats_apple['sharpe']:.4f}",
+     f"{stats_jpm['sharpe']:.4f}"),
+    ('Skewness',
+     f"{stats_apple['skew']:.4f}",
+     f"{stats_jpm['skew']:.4f}"),
+    ('Excess Kurtosis',
+     f"{stats_apple['kurt']:.4f}",
+     f"{stats_jpm['kurt']:.4f}"),
+    ('─' * 28, '─' * 12, '─' * 12),
+    ('Hist. VaR 95% (daily)',
+     f"{risk_apple['var_hist']*100:.4f}%",
+     f"{risk_jpm['var_hist']*100:.4f}%"),
+    ('Hist. CVaR 95% (daily)',
+     f"{risk_apple['cvar_hist']*100:.4f}%",
+     f"{risk_jpm['cvar_hist']*100:.4f}%"),
+    ('Max Drawdown',
+     f"{risk_apple['mdd']*100:.2f}%",
+     f"{risk_jpm['mdd']*100:.2f}%"),
+    ('Calmar Ratio',
+     f"{risk_apple['calmar']:.4f}",
+     f"{risk_jpm['calmar']:.4f}"),
+    ('─' * 28, '─' * 12, '─' * 12),
+    ('LSTM RMSE (test)',
+     f"${metrics_apple['rmse']:.2f}",
+     f"${metrics_jpm['rmse']:.2f}"),
+    ('LSTM MAPE (test)',
+     f"{metrics_apple['mape']:.2f}%",
+     f"{metrics_jpm['mape']:.2f}%"),
+    ('Directional Accuracy',
+     f"{metrics_apple['dir_acc']:.2f}%",
+     f"{metrics_jpm['dir_acc']:.2f}%"),
+    ("Theil's U",
+     f"{metrics_apple['theil_u']:.4f}",
+     f"{metrics_jpm['theil_u']:.4f}"),
+    ('─' * 28, '─' * 12, '─' * 12),
+    ('Strategy Sharpe Ratio',
+     f"{sharpe_a:.4f}",
+     f"{sharpe_j:.4f}"),
+    ('Trades Executed',
+     str(ntrades_a),
+     str(ntrades_j)),
+    ('Portfolio ρ(AAPL, JPM)',
+     f"{rho:.4f}", '—'),
+    ('Diversification Benefit',
+     f"{(np.sqrt(COV_annual[0,0])*0.5 + np.sqrt(COV_annual[1,1])*0.5 - vol_eq)*100:.2f}%",
+     '—'),
+]
+
+for r in rows:
+    print(f'  {r[0]:<28}  {r[1]:>12}  {r[2]:>12}')
+
+print('=' * 62)
+print('\nDISCLAIMER: Educational and portfolio demonstration only.')
+print('Not financial advice. Forecasts carry inherent uncertainty.')
+# ── Rolling volatility — GARCH context ───────────────────────────────────────
+# Demonstrates time-varying volatility (ARCH effects) —
+# the key limitation of constant-σ GBM and motivation for GARCH extensions.
+
+fig, axes = plt.subplots(2, 1, figsize=(16, 8))
+
+for ax, (lr, ticker, color) in zip(axes, [
+    (lr_apple, 'AAPL', COLORS['aapl']),
+    (lr_jpm,   'JPM',  COLORS['jpm'])
+]):
+    roll_vol = lr.rolling(21).std() * np.sqrt(252)  # 21-day rolling annualised vol
+
+    ax.plot(roll_vol.index, roll_vol.values * 100,
+            color=color, lw=1.2, label='21-day Rolling Vol (Ann.)')
+    ax.fill_between(roll_vol.index, roll_vol.values * 100,
+                    alpha=0.15, color=color)
+    ax.axhline(roll_vol.mean() * 100, color='white', lw=1.5,
+               linestyle='--', label=f'Mean vol: {roll_vol.mean()*100:.1f}%')
+
+    # Annotate extreme vol episodes
+    peak_date = roll_vol.idxmax()
+    ax.annotate(f'Peak: {roll_vol.max()*100:.1f}%\n{peak_date.strftime("%b %Y")}',
+                xy=(peak_date, roll_vol.max() * 100),
+                xytext=(30, -25), textcoords='offset points',
+                color='white', fontsize=8,
+                arrowprops=dict(arrowstyle='->', color='white', lw=1.0))
+
+    ax.set_title(f'{ticker} — Rolling 21-Day Annualised Volatility (ARCH Effects Visible)')
+    ax.set_ylabel('Volatility (%)')
+    ax.legend(fontsize=8)
+    ax.grid(True)
+
+plt.suptitle('Time-Varying Volatility — Motivation for GARCH(1,1) Extension', fontsize=13)
+plt.tight_layout()
+plt.show()
+
+print('\nACTUARIAL NOTE: Volatility clustering (ARCH effects) violates the')
+print('constant-σ assumption of GBM. A GARCH(1,1) extension would model:')
+print('  σ²_t = ω + α·ε²_{t-1} + β·σ²_{t-1}')
+print('This is standard in general insurance pricing and capital modelling.')
