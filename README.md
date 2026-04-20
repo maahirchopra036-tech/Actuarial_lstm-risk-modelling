@@ -1,230 +1,526 @@
-# Stock Price Prediction & Risk Analysis Using LSTM Neural Networks
-### Stochastic Modelling of Equity Returns — Apple (AAPL) & JPMorgan Chase (JPM)
+# Deep Learning Time-Series Forecasting with Stochastic Financial Foundations  
+**LSTM Neural Networks Applied to Financial Data with Actuarial Risk Context**
 
 ---
 
-## Overview
+# Project Overview
 
-This project applies **Long Short-Term Memory (LSTM) neural networks** to model and forecast the closing prices of two major equities — Apple Inc. (AAPL) and JPMorgan Chase (JPM) — over a 10-year historical window. Beyond price prediction, the project incorporates **return distribution analysis**, **simulated trading strategy evaluation**, and **multi-horizon forecasting** (1-year and 2-year), producing a framework that sits at the intersection of machine learning and quantitative risk modelling.
+This project develops a **Long Short-Term Memory (LSTM) neural network** to model and forecast financial time-series data using historical stock prices.
 
-The methodology draws on concepts central to both **actuarial science** and **quantitative finance**: stochastic process theory, time-series modelling, model error quantification, and scenario-based return simulation. It is applicable to contexts including asset-liability management, economic capital modelling, and investment strategy stress-testing.
+The core predictive mechanism is a **deep sequential learning model**, but the design and interpretation of the model are grounded in **financial mathematics**, **stochastic process theory**, and **actuarial risk reasoning**.
 
----
-
-## Why This Matters — Actuarial & Consulting Context
-
-### Stock Returns as a Stochastic Process
-
-Daily equity returns are commonly modelled as a **discrete-time stochastic process**. Under the classic assumption used in options pricing and actuarial investment models, log-returns follow:
-
-```
-ln(S_t / S_{t-1}) ~ N(μ, σ²)
-```
-
-This underpins the **lognormal model** used in Black-Scholes, and is the same distributional assumption applied in **with-profits actuarial reserving** and **unit-linked policy modelling** under Solvency II. The daily return series computed in this project directly represents this process empirically — without imposing the normality assumption, allowing the data to reveal fat tails, volatility clustering, and regime changes that simpler models miss.
-
-LSTM networks are particularly suited to financial time series because they capture **temporal dependencies and non-stationarity** — properties that violate the i.i.d. assumptions of simpler regression models, but which are characteristic of real market data.
-
-### LSTM as a Discrete-Time Sequential Model
-
-An LSTM is a type of **recurrent neural network** that maintains a hidden state across time steps, allowing it to learn long-range dependencies in sequential data. Formally, at each time step *t*, the model updates:
-
-```
-Cell state:   c_t = f_t ⊙ c_{t-1} + i_t ⊙ g_t
-Hidden state: h_t = o_t ⊙ tanh(c_t)
-```
-
-where *f*, *i*, *o*, *g* are learned gate vectors controlling what information to forget, input, and output. This structure is analogous to **autoregressive time-series models** (AR, ARIMA, VAR) used in actuarial economic scenario generation, but with the added capacity to learn non-linear relationships.
-
-This project uses a **60-day lookback window** — meaning the model conditions each prediction on the prior 60 trading days, reflecting the kind of rolling window assumptions made in **chain-ladder reserving** and **dynamic financial analysis (DFA)** models.
-
-### Model Architecture
-
-```
-Input Layer     →  shape (60 timesteps, 1 feature)
-LSTM Layer 1    →  50 units, return_sequences=True
-Dropout (20%)   →  regularisation to prevent overfitting
-LSTM Layer 2    →  50 units
-Dropout (20%)   →  regularisation
-Dense Output    →  1 unit (next-day price)
-Loss Function   →  Mean Squared Error (MSE)
-Optimiser       →  Adam (adaptive learning rate)
-```
-
-Dropout regularisation is the neural network analogue of **credibility weighting** in actuarial models — it prevents the model from over-fitting to noise in the training data, improving out-of-sample generalisation.
+The goal is not simply to produce forecasts, but to situate those forecasts within the mathematical framework commonly used to model financial risk and uncertainty.
 
 ---
 
-## Project Structure
+# Core Aim
 
-```
-├── lstm_stock_prediction.ipynb   # Main notebook
-├── README.md                     # This file
-```
+To construct a **sequence-based neural forecasting model** that learns temporal dependencies in financial data while remaining consistent with the statistical and stochastic behaviour expected in real financial time series.
 
 ---
 
-## Dependencies
+# Why Time-Series Models Require Mathematical Structure
 
-| Library | Purpose |
-|---|---|
-| `yfinance` | Market data download (AAPL, JPM) |
-| `pandas` | Data manipulation and time-series indexing |
-| `numpy` | Numerical operations and array handling |
-| `matplotlib` | Visualisation |
-| `scikit-learn` | MinMaxScaler, RMSE computation |
-| `tensorflow / keras` | LSTM model construction and training |
+Financial prices are not independent observations.
 
-Install all dependencies:
+They evolve through time in a structured but uncertain way.
 
-```bash
-pip install yfinance pandas numpy matplotlib scikit-learn tensorflow
-```
+Mathematically, asset prices are often treated as **stochastic processes**, meaning:
+
+- future values are random
+- but depend on past values
+- with variability governed by measurable parameters
+
+A neural network does not replace this theory — it **learns patterns generated by it**.
 
 ---
 
-## Methodology
+# Fundamental Mathematical Representation of Asset Prices
 
-### 1. Data Acquisition & Exploratory Analysis
+In financial mathematics, asset prices are often modelled using **Geometric Brownian Motion (GBM)**.
 
-Ten years of daily OHLCV (Open, High, Low, Close, Volume) data is retrieved for both tickers. Initial exploratory steps include:
+\[
+dS_t = \mu S_t dt + \sigma S_t dW_t
+\]
 
-- **Closing price time series** — visualises the long-run price trend, capturing major market events (2020 COVID crash, 2022 rate-hike selloff)
-- **Daily returns** (`pct_change()`) — the empirical realisation of the stochastic return process; volatile clustering visible in the series reflects **heteroskedasticity**, a key feature motivating GARCH models in actuarial economic scenario generators
-- **20-day moving average** — a smoothed signal that filters short-term noise; analogous to **graduated mortality rates** in actuarial graduation, where raw data is smoothed to reveal underlying trends
+Where:
 
-### 2. Data Preprocessing & Normalisation
-
-Closing prices are normalised to [0, 1] using **Min-Max scaling**:
-
-```
-x_scaled = (x - x_min) / (x_max - x_min)
-```
-
-This is essential for gradient-based optimisation in neural networks. Predictions are subsequently inverse-transformed to recover actual USD prices — preserving the interpretability required for financial reporting.
-
-Sequences of 60 consecutive trading days are constructed as inputs *X*, with the following day's price as the target *y*. This sliding-window approach is conceptually identical to the **development year triangles** used in claims reserving, where each diagonal represents a successive time window of observed data.
-
-### 3. Model Training
-
-Separate LSTM models are trained independently for Apple and JPMorgan. Key parameters:
-
-- **Epochs:** 5 (sufficient for convergence given data volume; increasing epochs risks overfitting)
-- **Batch size:** 32 (mini-batch stochastic gradient descent)
-- **Validation:** Training loss monitored across epochs; loss converges steadily, indicating stable learning
-
-Training on the full historical dataset allows the model to learn across multiple market regimes — bull markets, corrections, and recovery — mirroring the **multi-scenario** approach in actuarial stress testing under IFoA/IFRS 17 standards.
-
-### 4. Performance Evaluation — Error Metrics
-
-Two standard error metrics are computed:
-
-**Root Mean Squared Error (RMSE):**
-```
-RMSE = √( (1/n) Σ (y_actual - y_predicted)² )
-```
-RMSE penalises large deviations heavily due to the squared term — analogous to **quadratic loss functions** used in actuarial credibility theory (Bühlmann-Straub model). In portfolio risk contexts, RMSE maps to **tracking error** against a benchmark.
-
-**Mean Absolute Percentage Error (MAPE):**
-```
-MAPE = (1/n) Σ |( y_actual - y_predicted ) / y_actual| × 100%
-```
-MAPE provides a scale-independent relative error, directly comparable across the two tickers regardless of their price levels. This mirrors the use of **proportional error measures** in experience analysis and mortality investigations, where absolute deviations in large portfolios can be misleading without normalisation.
-
-### 5. Simulated Trading Strategy
-
-A simple **signal-based trading strategy** is implemented: the model goes long (holds the stock) on days where its prediction implies an upward move, and stays flat otherwise:
-
-```python
-if predicted[t+1] > predicted[t]:
-    strategy_return = actual_daily_return[t]
-else:
-    strategy_return = 0
-```
-
-Cumulative returns are computed via the **geometric compounding** formula:
-
-```
-Cumulative Return = ∏ (1 + r_t)
-```
-
-This is directly analogous to the **accumulation factors** used in actuarial present value calculations and **asset share projections** for with-profits business. The comparison of strategy returns against buy-and-hold benchmarks provides a signal-to-noise assessment of model skill — a framework parallel to **information ratio** analysis in investment mandates.
-
-> **Note:** This simulation is in-sample (trained and evaluated on the same data) and should be interpreted as a proof-of-concept rather than a live trading signal. Out-of-sample backtesting would be required for robust strategy validation — a distinction central to actuarial **model validation** standards under TAS 100.
-
-### 6. Multi-Horizon Forecasting
-
-The trained model is used to generate **rolling iterative forecasts** of 1 year (252 trading days) and 2 years (504 trading days) beyond the historical window. At each step, the model's own previous prediction is fed back as input:
-
-```python
-current_batch = np.append(current_batch[:,1:,:], [[pred]], axis=1)
-```
-
-This autoregressive forecasting approach is analogous to **stochastic projection models** in actuarial liability valuation — for example, projecting future mortality rates beyond observed data using a Lee-Carter or CBD model, where each projected value feeds into the next period's estimate. The compounding of prediction error over longer horizons is an inherent limitation, reflected in widening uncertainty intervals in practice.
+- \( S_t \) = asset price  
+- \( \mu \) = drift (expected return)  
+- \( \sigma \) = volatility  
+- \( W_t \) = Brownian motion  
 
 ---
 
-## Results Summary
+## Why This Matters for the Neural Network
 
-| Metric | Apple (AAPL) | JPMorgan (JPM) |
-|---|---|---|
-| RMSE | Reported at runtime | Reported at runtime |
-| MAPE | Reported at runtime | Reported at runtime |
+Even though the LSTM model does not explicitly simulate GBM:
 
-Both models achieve low RMSE relative to the price levels of each stock, with MAPE values indicating close tracking of the underlying price series on the training set.
+- Historical price sequences reflect stochastic dynamics
+- The neural network learns statistical patterns created by volatility and drift
+- Forecast behaviour must be interpreted relative to stochastic uncertainty
 
----
+Thus:
 
-## Key Visualisations
-
-**1. Historical Closing Prices** — full 10-year price series for both equities, capturing long-run trend and major drawdown events.
-
-**2. Daily Return Series** — empirical realisation of the stochastic return process; volatility clustering visible, consistent with GARCH-type behaviour.
-
-**3. 20-Day Moving Average Overlay** — graduated price signal alongside raw closes, illustrating trend extraction from noisy data.
-
-**4. Actual vs. Predicted Prices** — LSTM fit across the training window for both tickers on a common date axis, demonstrating model capture of price dynamics.
-
-**5. Simulated Cumulative Returns** — strategy vs. buy-and-hold comparison for both stocks, illustrating the added value (or otherwise) of the directional signal.
-
-**6. 1-Year & 2-Year Forecasts** — projected price paths for AAPL and JPM beyond the observed data, with uncertainty implicit in the autoregressive compounding.
+**The neural network is learning structure produced by an underlying stochastic system.**
 
 ---
 
-## Limitations & Extensions
+# Logarithmic Returns
 
-**Current limitations:**
+Financial time-series modelling is typically performed using **log returns** rather than raw prices.
 
-- Model is trained and evaluated on the same dataset (in-sample) — a formal train/test split with hold-out validation would be required for rigorous out-of-sample assessment
-- No external features (macroeconomic indicators, earnings data, sentiment) are incorporated; a multivariate LSTM could integrate these as additional input channels
-- Forecast uncertainty is not quantified; a **Monte Carlo dropout** approach or **conformal prediction intervals** would provide probabilistic bounds on forecasts — a standard requirement in actuarial reporting under uncertainty
+\[
+r_t =
+\ln\left(\frac{P_t}{P_{t-1}}\right)
+\]
 
-**Natural extensions for actuarial application:**
+Where:
 
-- **Covariance modelling:** With two assets modelled jointly, a natural extension is computing the rolling return covariance matrix between AAPL and JPM. This feeds directly into **portfolio variance** (σ²_p = w'Σw) and is the foundation of Markowitz mean-variance optimisation and actuarial **asset-liability matching** frameworks
-- **VaR / CVaR estimation:** The empirical return distribution from this model can be used to estimate **Value at Risk** and **Conditional Value at Risk** — standard risk capital metrics under Solvency II internal models
-- **Volatility modelling:** Combining LSTM price predictions with a **GARCH(1,1)** model on residuals would capture the heteroskedastic volatility structure apparent in the daily return series
-- **Mortality/lapse analogue:** The same LSTM architecture can be applied to model policyholder behaviour time series (e.g., monthly lapse rates), making this methodology directly transferable to life insurance experience analysis
+- \( P_t \) = price at time \( t \)
 
 ---
 
-## Technical Notes
+## Why Log Returns Are Essential
 
-- `MinMaxScaler` is fitted on the full dataset before sequence creation; in a strict out-of-sample framework, the scaler should be fitted on training data only to prevent data leakage
-- The `yfinance` library applies automatic price adjustment for splits and dividends (`auto_adjust=True` by default in recent versions), ensuring returns reflect true economic performance
-- Future date generation uses `freq='B'` (business days), correctly excluding weekends from the forecast horizon
+Log returns provide:
+
+### Additivity Across Time
+
+Multiple-period returns become:
+
+\[
+r_{t:t+n}
+=
+\sum_{i=0}^{n}
+r_{t+i}
+\]
+
+This property simplifies:
+
+- stochastic modelling
+- volatility estimation
+- risk measurement
 
 ---
 
-## Tools & Environment
+## Connection to the LSTM Model
 
-- Python 3.10+
-- TensorFlow 2.x / Keras
-- Developed in Google Colab (GPU runtime recommended for faster training)
+Even when price levels are used as inputs:
+
+- log-return behaviour defines the statistical structure of the data
+- volatility patterns embedded in returns influence sequence learning
+- normalization and scaling depend on return variability
+
+Thus returns define the **statistical environment** in which the network learns.
 
 ---
 
-## Author
+# Volatility Modelling
 
-*Quantitative Finance & Risk Modelling Project*
-*Built to demonstrate applied machine learning in an actuarial and financial analysis context*
+Volatility measures dispersion in returns.
+
+Mathematically:
+
+\[
+\sigma =
+\sqrt{\text{Var}(r)}
+\]
+
+Annualised volatility:
+
+\[
+\sigma_{annual}
+=
+\sigma_{daily}
+\times
+\sqrt{252}
+\]
+
+---
+
+## Why Volatility Matters for Neural Learning
+
+Volatility determines:
+
+- noise intensity
+- prediction stability
+- sequence variability
+
+High volatility:
+
+- reduces predictability
+- increases model uncertainty
+- produces wider forecasting variability
+
+Thus:
+
+**Volatility directly influences the difficulty of the learning problem.**
+
+---
+
+# Covariance Structure
+
+Financial variables rarely evolve independently.
+
+Covariance measures joint variability.
+
+\[
+\text{Cov}(X,Y)
+=
+E[(X-\mu_X)(Y-\mu_Y)]
+\]
+
+---
+
+## Why Covariance Matters
+
+Covariance determines:
+
+- dependency between assets
+- portfolio risk
+- systemic behaviour
+
+Even when modelling a single asset, covariance theory is relevant because:
+
+- multi-variable extensions rely on covariance matrices
+- neural networks can incorporate multiple correlated inputs
+- dependency structures shape future model scalability
+
+---
+
+# Stationarity and Model Stability
+
+A stationary time series has:
+
+- constant mean
+- constant variance
+- stable covariance structure
+
+Non-stationary data can produce unstable models.
+
+---
+
+## Augmented Dickey-Fuller (ADF) Test
+
+Used to test:
+
+\[
+H_0:
+\text{Series contains a unit root}
+\]
+
+Stationarity affects:
+
+- training stability
+- predictive reliability
+- statistical consistency
+
+---
+
+# Risk Quantification Framework
+
+Forecasts are incomplete without risk interpretation.
+
+Two central actuarial-style risk measures:
+
+---
+
+## Value at Risk (VaR)
+
+Measures extreme loss thresholds.
+
+\[
+\text{VaR}_\alpha
+\]
+
+Represents:
+
+Loss not exceeded with probability:
+
+\[
+1 - \alpha
+\]
+
+---
+
+## Expected Shortfall (CVaR)
+
+Measures tail loss severity.
+
+\[
+\text{CVaR}
+=
+E[\text{Loss} \mid \text{Loss} > \text{VaR}]
+\]
+
+---
+
+## Why Risk Measures Matter Here
+
+Even though the LSTM predicts prices:
+
+Risk measures allow:
+
+- contextualizing predictions
+- understanding downside behaviour
+- relating forecasts to historical risk distributions
+
+Thus risk metrics support **interpretation**, not just prediction.
+
+---
+
+# LSTM Model Architecture
+
+The forecasting engine consists of:
+
+---
+
+## Sequential Input Windows
+
+A rolling window converts time series into supervised learning format.
+
+If window length = 60:
+
+Input:
+
+\[
+[P_{t-60}, ..., P_t]
+\]
+
+Output:
+
+\[
+P_{t+1}
+\]
+
+This transforms time-series forecasting into:
+
+**sequence prediction**
+
+---
+
+## Memory Mechanism
+
+Each LSTM unit contains:
+
+- input gate  
+- forget gate  
+- output gate  
+
+These control:
+
+- retention of useful information
+- removal of noise
+- propagation of long-term patterns
+
+---
+
+## Dropout Regularisation
+
+Dropout prevents:
+
+- overfitting
+- memorization of noise
+
+This improves:
+
+- model robustness
+- generalisation ability
+
+---
+
+# Scaling and Normalisation
+
+Neural networks require scaled inputs.
+
+Typical method:
+
+\[
+x' =
+\frac{x - x_{min}}
+{x_{max} - x_{min}}
+\]
+
+---
+
+## Why Scaling Is Mathematically Necessary
+
+Without scaling:
+
+- gradients become unstable
+- training diverges
+- convergence slows dramatically
+
+Scaling ensures:
+
+- numerical stability
+- efficient learning
+
+---
+
+# Forecasting Framework
+
+After training:
+
+- predictions are generated sequentially
+- outputs are fed back into inputs
+- long-horizon forecasts are constructed recursively
+
+This creates:
+
+**multi-step time-series forecasts**
+
+---
+
+# Mathematical Interpretation of the Model
+
+Conceptually, the model can be interpreted as:
+
+\[
+\hat{P}_{t+1}
+=
+f(P_t,
+P_{t-1},
+\dots,
+P_{t-n})
+\]
+
+Where:
+
+\[
+f
+\]
+
+is a learned nonlinear function approximated by the neural network.
+
+---
+
+# Key Mathematical Strengths of This Model
+
+This project integrates:
+
+- stochastic time-series reasoning
+- statistical normalization
+- sequential modelling
+- nonlinear approximation
+- uncertainty-aware interpretation
+
+Rather than treating forecasting as purely computational, it embeds:
+
+**mathematical structure into predictive learning.**
+
+---
+
+# Potential Future Improvements (Advanced Extensions)
+
+These are **logically consistent expansions**, not currently required.
+
+---
+
+## Multivariate LSTM Models
+
+Would incorporate:
+
+- covariance matrices
+- multiple correlated inputs
+
+Useful for:
+
+- portfolio modelling
+- systemic risk modelling
+
+---
+
+## GARCH Volatility Modelling
+
+Used to model:
+
+Time-varying volatility.
+
+This improves:
+
+- risk estimation
+- return variability modelling
+
+---
+
+## Monte Carlo Simulation
+
+Based on:
+
+Geometric Brownian Motion.
+
+Used to:
+
+- generate probabilistic price paths
+- compare neural forecasts to stochastic simulations
+
+---
+
+## Portfolio Risk Modelling
+
+Would include:
+
+\[
+\sigma_p^2
+=
+w^T
+\Sigma
+w
+\]
+
+Where:
+
+- \( w \) = asset weights  
+- \( \Sigma \) = covariance matrix  
+
+---
+
+# Project Value
+
+This project demonstrates:
+
+- deep learning implementation
+- time-series reasoning
+- stochastic financial awareness
+- actuarial-style risk thinking
+- mathematical interpretation of predictive models
+
+It combines:
+
+**machine learning**  
+**financial mathematics**  
+**stochastic reasoning**
+
+into a unified modelling framework.
+
+---
+
+# Limitations
+
+Important mathematical limitations include:
+
+- Financial markets are not perfectly stationary
+- Neural forecasts accumulate error over long horizons
+- Real volatility changes over time
+- Predictions remain probabilistic, not deterministic
+
+Understanding limitations is central to responsible modelling.
+
+---
+
+# Summary
+
+This project demonstrates how **deep learning models can be applied to financial time series while remaining grounded in rigorous mathematical reasoning**.
+
+Rather than treating neural networks as black boxes, the model is interpreted within:
+
+- stochastic process theory
+- statistical risk modelling
+- time-series mathematics
+
+This integration strengthens both:
+
+- predictive modelling  
+- risk-aware interpretation
