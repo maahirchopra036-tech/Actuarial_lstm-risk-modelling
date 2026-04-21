@@ -1,4 +1,4 @@
-# Deep Learning Time-Series Forecasting with Stochastic Financial Foundations
+# Deep Learning Time-Series Forecasting with Stochastic Financial Foundations.
 
 > **LSTM Neural Networks · Geometric Brownian Motion · Actuarial Risk Metrics · Portfolio Covariance Analysis**
 
